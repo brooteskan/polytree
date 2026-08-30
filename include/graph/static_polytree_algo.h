@@ -1,261 +1,314 @@
 #pragma once
 
-// wz/core/graph/polytree_algo.h
-
-#include <graph/static_polytree.h>
-#include <graph/concepts.h>
-#include <algo/next.h>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <ranges>
 #include <span>
-#include <vector>
 
-namespace wz::core::graph {
+#include <algo/next.h>
+#include <graph/concepts.h>
+#include <graph/static_polytree.h>
 
+namespace wz::core::graph
+{
+    namespace detail
+    {
+        template<typename S>
+            requires Sink<S, NodeHandle>
+        algo::next::execution_status consume_order(
+            std::span<const NodeHandle> order,
+            S& sink)
+        {
+            return algo::next::transform(
+                order,
+                sink,
+                [](NodeHandle node) { return node; });
+        }
+    }
 
-
-    // ─── Sink-based traversal ─────────────────────────────────────────────────────
-
+    // Sequential sink adapters retain early termination while sharing the
+    // canonical contiguous traversal orders with visitor and range consumers.
     template<typename N, typename E, typename S>
         requires Sink<S, NodeHandle>
-    void dfs(const Polytree<N, E>& t, NodeHandle root, S& sink)
+    algo::next::execution_status dfs(
+        const Polytree<N, E>& tree,
+        NodeHandle root,
+        S& sink)
     {
-        std::vector<bool>       visited(node_count(t), false);
-        std::vector<NodeHandle> stack;
-        stack.push_back(root);
-        while (!stack.empty()) {
-            NodeHandle n = stack.back(); stack.pop_back();
-            if (visited[n]) continue;
-            visited[n] = true;
-            if (!sink.push(n)) return;
-            for (NodeHandle child : children(t, n))
-                stack.push_back(child);
-        }
+        const auto order = depth_first_order(tree, root);
+        return detail::consume_order(std::span<const NodeHandle>{order}, sink);
     }
 
     template<typename N, typename E, typename S>
         requires Sink<S, NodeHandle>
-    void bfs(const Polytree<N, E>& t, NodeHandle root, S& sink)
+    algo::next::execution_status bfs(
+        const Polytree<N, E>& tree,
+        NodeHandle root,
+        S& sink)
     {
-        std::vector<bool>       visited(node_count(t), false);
-        std::vector<NodeHandle> queue;
-        queue.push_back(root);
-        visited[root] = true;
-        for (uint32_t head = 0; head < queue.size(); ++head) {
-            NodeHandle n = queue[head];
-            if (!sink.push(n)) return;
-            for (NodeHandle child : children(t, n))
-                if (!visited[child]) { visited[child] = true; queue.push_back(child); }
-        }
+        const auto order = breadth_first_order(tree, root);
+        return detail::consume_order(std::span<const NodeHandle>{order}, sink);
     }
 
-    // Ancestor walk with sink — unique to polytree.
-    // Walks from n toward the root, stopping if push() returns false.
     template<typename N, typename E, typename S>
         requires Sink<S, NodeHandle>
-    void walk_ancestors(const Polytree<N, E>& t, NodeHandle n, S& sink)
+    algo::next::execution_status walk_ancestors(
+        const Polytree<N, E>& tree,
+        NodeHandle node,
+        S& sink)
     {
-        NodeHandle cur = parent(t, n);
-        while (cur != INVALID_NODE) {
-            if (!sink.push(cur)) return;
-            cur = parent(t, cur);
-        }
+        const auto order = ancestor_order(tree, node);
+        return detail::consume_order(std::span<const NodeHandle>{order}, sink);
     }
 
+    struct PolytreeMaterialization
+    {
+        std::span<NodeHandle> values;
+        algo::next::execution_status status = algo::next::execution_status::completed;
 
-    // ─── Materialization ──────────────────────────────────────────────────────────
+        [[nodiscard]] constexpr auto begin() noexcept { return values.begin(); }
+        [[nodiscard]] constexpr auto end() noexcept { return values.end(); }
+        [[nodiscard]] constexpr auto begin() const noexcept { return values.begin(); }
+        [[nodiscard]] constexpr auto end() const noexcept { return values.end(); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return values.empty(); }
+        [[nodiscard]] constexpr std::size_t size() const noexcept { return values.size(); }
+        [[nodiscard]] constexpr NodeHandle& operator[](std::size_t index) noexcept
+        {
+            return values[index];
+        }
 
-    namespace detail {
+        [[nodiscard]] constexpr const NodeHandle& operator[](
+            std::size_t index) const noexcept
+        {
+            return values[index];
+        }
 
-        struct PolytreeSpanSink {
-            std::span<NodeHandle> buf;
-            uint32_t              count = 0;
+        [[nodiscard]] constexpr bool was_truncated() const noexcept
+        {
+            return algo::next::was_truncated(status);
+        }
 
-            bool push(NodeHandle n) {
-                if (count >= static_cast<uint32_t>(buf.size())) return false;
-                buf[count++] = n;
+        constexpr operator std::span<NodeHandle>() const noexcept
+        {
+            return values;
+        }
+    };
+
+    namespace detail
+    {
+        struct PolytreeSpanSink
+        {
+            std::span<NodeHandle> buffer;
+            std::size_t count = 0;
+
+            bool push(NodeHandle node)
+            {
+                if (count >= buffer.size())
+                {
+                    return false;
+                }
+                buffer[count++] = node;
                 return true;
             }
 
-            std::span<NodeHandle> result() const { return buf.subspan(0, count); }
+            [[nodiscard]] std::span<NodeHandle> result() const
+            {
+                return buffer.first(count);
+            }
         };
 
-    } // namespace detail
+        inline PolytreeMaterialization materialize(
+            std::span<const NodeHandle> order,
+            std::span<NodeHandle> scratch)
+        {
+            PolytreeSpanSink sink{scratch};
+            const auto status = consume_order(order, sink);
+            return {sink.result(), status};
+        }
+    }
 
     template<typename N, typename E>
-    std::span<NodeHandle> dfs_materialize(
-        const Polytree<N, E>& t,
-        NodeHandle            root,
+    [[nodiscard]] PolytreeMaterialization dfs_materialize(
+        const Polytree<N, E>& tree,
+        NodeHandle root,
         std::span<NodeHandle> scratch)
     {
-        detail::PolytreeSpanSink sink{ scratch };
-        dfs(t, root, sink);
-        return sink.result();
+        const auto order = depth_first_order(tree, root);
+        return detail::materialize(order, scratch);
     }
 
     template<typename N, typename E>
-    std::span<NodeHandle> bfs_materialize(
-        const Polytree<N, E>& t,
-        NodeHandle            root,
+    [[nodiscard]] PolytreeMaterialization bfs_materialize(
+        const Polytree<N, E>& tree,
+        NodeHandle root,
         std::span<NodeHandle> scratch)
     {
-        detail::PolytreeSpanSink sink{ scratch };
-        bfs(t, root, sink);
-        return sink.result();
+        const auto order = breadth_first_order(tree, root);
+        return detail::materialize(order, scratch);
     }
 
-    // Ancestor walk materialization — produces a span of ancestors
-    // ordered from immediate parent to root, truncated if scratch is exhausted.
     template<typename N, typename E>
-    std::span<NodeHandle> ancestors_materialize(
-        const Polytree<N, E>& t,
-        NodeHandle            n,
+    [[nodiscard]] PolytreeMaterialization ancestors_materialize(
+        const Polytree<N, E>& tree,
+        NodeHandle node,
         std::span<NodeHandle> scratch)
     {
-        detail::PolytreeSpanSink sink{ scratch };
-        walk_ancestors(t, n, sink);
-        return sink.result();
-    }
-
-
-    // ─── Document-tree helpers ────────────────────────────────────────────────────
-
-    // Returns UINT32_MAX for roots (no parent).
-    template<typename N, typename E>
-    uint32_t child_ordinal(const Polytree<N, E>& t, NodeHandle n) {
-        NodeHandle par = parent(t, n);
-        if (par == INVALID_NODE) return UINT32_MAX;
-        auto ch = children(t, par);
-        for (uint32_t i = 0; i < ch.size(); ++i)
-            if (ch[i] == n) return i;
-        return UINT32_MAX;
-    }
-
-    // Returns INVALID_NODE for first children and roots.
-    template<typename N, typename E>
-    NodeHandle previous_sibling(const Polytree<N, E>& t, NodeHandle n) {
-        uint32_t ord = child_ordinal(t, n);
-        if (ord == UINT32_MAX || ord == 0) return INVALID_NODE;
-        return child_at(t, parent(t, n), ord - 1);
-    }
-
-    // Returns INVALID_NODE for last children and roots.
-    template<typename N, typename E>
-    NodeHandle next_sibling(const Polytree<N, E>& t, NodeHandle n) {
-        uint32_t ord = child_ordinal(t, n);
-        if (ord == UINT32_MAX) return INVALID_NODE;
-        return child_at(t, parent(t, n), ord + 1);
+        const auto order = ancestor_order(tree, node);
+        return detail::materialize(order, scratch);
     }
 
     template<typename N, typename E>
-    uint32_t depth(const Polytree<N, E>& t, NodeHandle n) {
-        uint32_t   d   = 0;
-        NodeHandle cur = parent(t, n);
-        while (cur != INVALID_NODE) { ++d; cur = parent(t, cur); }
-        return d;
+    std::uint32_t child_ordinal(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        const auto parent_node = parent(tree, node);
+        if (parent_node == INVALID_NODE)
+        {
+            return UINT32_MAX;
+        }
+
+        const auto siblings = children(tree, parent_node);
+        const auto found = std::ranges::find(siblings, node);
+        return found == siblings.end()
+            ? UINT32_MAX
+            : static_cast<std::uint32_t>(std::ranges::distance(siblings.begin(), found));
     }
 
-    // Materializes all roots into scratch. Truncates silently if scratch is exhausted.
     template<typename N, typename E>
-    std::span<NodeHandle> roots_materialize(
-        const Polytree<N, E>& t,
+    NodeHandle previous_sibling(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        const auto ordinal = child_ordinal(tree, node);
+        return ordinal == UINT32_MAX || ordinal == 0
+            ? INVALID_NODE
+            : child_at(tree, parent(tree, node), ordinal - 1);
+    }
+
+    template<typename N, typename E>
+    NodeHandle next_sibling(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        const auto ordinal = child_ordinal(tree, node);
+        return ordinal == UINT32_MAX
+            ? INVALID_NODE
+            : child_at(tree, parent(tree, node), ordinal + 1);
+    }
+
+    template<typename N, typename E>
+    std::uint32_t depth(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        return static_cast<std::uint32_t>(ancestor_order(tree, node).size());
+    }
+
+    template<typename N, typename E>
+    [[nodiscard]] PolytreeMaterialization roots_materialize(
+        const Polytree<N, E>& tree,
         std::span<NodeHandle> scratch)
     {
-        uint32_t count = 0;
-        for (uint32_t i = 0; i < node_count(t) && count < scratch.size(); ++i)
-            if (is_root(t, i)) scratch[count++] = i;
-        return scratch.subspan(0, count);
+        return detail::materialize(roots(tree), scratch);
     }
 
-    // Materializes ancestors from root down to the immediate parent of n.
-    // Excludes n itself. Truncates silently if scratch is exhausted.
     template<typename N, typename E>
-    std::span<NodeHandle> ancestors_materialize_root_first(
-        const Polytree<N, E>& t,
-        NodeHandle            n,
+    [[nodiscard]] PolytreeMaterialization ancestors_materialize_root_first(
+        const Polytree<N, E>& tree,
+        NodeHandle node,
         std::span<NodeHandle> scratch)
     {
-        detail::PolytreeSpanSink sink{ scratch };
-        walk_ancestors(t, n, sink);
-        auto filled = sink.result();
-        std::reverse(filled.begin(), filled.end());
-        return filled;
+        const auto order = ancestor_order(tree, node);
+        auto result = detail::materialize(order, scratch);
+        std::ranges::reverse(result.values);
+        return result;
     }
 
     template<typename N, typename E>
-    uint32_t subtree_size(const Polytree<N, E>& t, NodeHandle root) {
-        uint32_t count = 0;
-        dfs(t, root, [&](NodeHandle) { ++count; });
-        return count;
+    std::uint32_t subtree_size(const Polytree<N, E>& tree, NodeHandle root)
+    {
+        return static_cast<std::uint32_t>(depth_first_order(tree, root).size());
     }
 
-    // Returns INVALID_NODE if no child matches.
-    // Predicate: (NodeHandle child, const E& edge_data, uint32_t ordinal) -> bool
     template<typename N, typename E, typename Predicate>
-    NodeHandle find_child_if(const Polytree<N, E>& t, NodeHandle n, Predicate&& pred) {
-        auto ch = children(t, n);
-        auto ed = outgoing_edge_data(t, n);
-        for (uint32_t i = 0; i < ch.size(); ++i)
-            if (pred(ch[i], ed[i], i)) return ch[i];
-        return INVALID_NODE;
+    NodeHandle find_child_if(
+        const Polytree<N, E>& tree,
+        NodeHandle node,
+        Predicate&& predicate)
+    {
+        const auto child_nodes = children(tree, node);
+        const auto edge_data = outgoing_edge_data(tree, node);
+        const auto ordinals = std::views::iota(
+            std::uint32_t{0},
+            static_cast<std::uint32_t>(child_nodes.size()));
+        const auto found = std::ranges::find_if(ordinals, [&](std::uint32_t ordinal)
+        {
+            return std::invoke(
+                predicate,
+                child_nodes[ordinal],
+                edge_data[ordinal],
+                ordinal);
+        });
+        return found == ordinals.end() ? INVALID_NODE : child_nodes[*found];
     }
 
-    // Walks the root-to-node path, calling visitor(parent, child, edge_data, ordinal)
-    // for each edge. Returns false if node is INVALID_NODE or scratch cannot hold the
-    // full path (requires depth(t, node) + 1 slots). Returns true and calls visitor
-    // zero times when node is a root.
     template<typename N, typename E, typename Visitor>
     bool walk_path_from_root(
-        const Polytree<N, E>& t,
-        NodeHandle            node,
+        const Polytree<N, E>& tree,
+        NodeHandle node,
         std::span<NodeHandle> scratch,
-        Visitor&&             visitor)
+        Visitor&& visitor)
     {
-        if (node == INVALID_NODE) return false;
-
-        // Walk ancestors parent-first into scratch[0..d-1].
-        uint32_t   d   = 0;
-        NodeHandle cur = parent(t, node);
-        while (cur != INVALID_NODE) {
-            if (d >= scratch.size()) return false;
-            scratch[d++] = cur;
-            cur = parent(t, cur);
+        if (node == INVALID_NODE)
+        {
+            return false;
         }
-        // Need one more slot for node itself.
-        if (d >= scratch.size()) return false;
 
-        std::reverse(scratch.begin(), scratch.begin() + d);
-        scratch[d] = node;
-        auto path = scratch.subspan(0, d + 1);
+        const auto ancestors = ancestor_order(tree, node);
+        const auto required = ancestors.size() + 1;
+        if (required > scratch.size())
+        {
+            return false;
+        }
 
-        // Scan each parent's child span once to get ordinal and edge data together.
-        for (uint32_t i = 0; i + 1 < path.size(); ++i) {
-            NodeHandle par   = path[i];
-            NodeHandle child = path[i + 1];
-            auto ch = children(t, par);
-            auto ed = outgoing_edge_data(t, par);
-            for (uint32_t j = 0; j < ch.size(); ++j) {
-                if (ch[j] == child) { visitor(par, child, ed[j], j); break; }
+        std::ranges::reverse_copy(ancestors, scratch.begin());
+        scratch[ancestors.size()] = node;
+        const auto path = scratch.first(required);
+        const auto edge_indices = std::views::iota(std::size_t{0}, path.size() - 1);
+        std::ranges::for_each(edge_indices, [&](std::size_t index)
+        {
+            const auto parent_node = path[index];
+            const auto child_node = path[index + 1];
+            const auto child_nodes = children(tree, parent_node);
+            const auto found = std::ranges::find(child_nodes, child_node);
+            if (found != child_nodes.end())
+            {
+                const auto ordinal = static_cast<std::uint32_t>(
+                    std::ranges::distance(child_nodes.begin(), found));
+                std::invoke(
+                    visitor,
+                    parent_node,
+                    child_node,
+                    outgoing_edge_data(tree, parent_node)[ordinal],
+                    ordinal);
             }
-        }
+        });
         return true;
     }
 
-
-    // ─── Pipeline adapter ─────────────────────────────────────────────────────────
-
     template<typename Pipeline, typename Out>
-    struct PolytreePipelineSink {
-        const Pipeline& pipe;
-        Out& out;
+    struct PolytreePipelineSink
+    {
+        const Pipeline& pipeline;
+        Out& output;
 
-        bool push(NodeHandle n) {
-            const std::span<const NodeHandle> input{ &n, 1 };
-            return !algo::next::was_truncated(pipe(input, out));
+        bool push(NodeHandle node)
+        {
+            const std::span<const NodeHandle> input{&node, 1};
+            return !algo::next::was_truncated(pipeline(input, output));
         }
     };
 
     template<typename Pipeline, typename Out>
-    PolytreePipelineSink<Pipeline, Out> as_sink(const Pipeline& pipe, Out& out) {
-        return { pipe, out };
+    PolytreePipelineSink<Pipeline, Out> as_sink(
+        const Pipeline& pipeline,
+        Out& output)
+    {
+        return {pipeline, output};
     }
-
-} // namespace wz::core::graph
+}

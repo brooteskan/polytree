@@ -1,344 +1,608 @@
 #pragma once
 
-// wz/core/graph/polytree.h
-
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <iterator>
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <ranges>
 #include <span>
+#include <utility>
 #include <vector>
 
-#include <graph/static_dag.h> // NodeHandle, EdgeHandle, INVALID_NODE, detail::carve
+#include <graph/handles.h>
 
-namespace wz::core::graph {
+namespace wz::core::graph
+{
+    struct PolytreeEvaluationPlan
+    {
+        std::span<const NodeHandle> topological_order;
+        std::span<const NodeHandle> reverse_topological_order;
+        std::span<const NodeHandle> roots;
+        std::span<const NodeHandle> dependency_order;
+        std::span<const std::uint32_t> dependency_level_offsets;
 
-    // ─── Polytree — pure view type, owns nothing ─────────────────────────────────
-    //
-    // A DAG where every node has at most one parent.
-    // The in-CSR from DAG collapses to a flat parent array:
-    //   parent[n] == INVALID_NODE  →  n is a root
-    //   parent[n] == h             →  h is the sole parent of n
-    //
-    // Buffer layout (single contiguous allocation):
-    //
-    //   [ NodeData   * nc     ]   node_data
-    //   [ uint32_t   * (nc+1) ]   out_offsets
-    //   [ NodeHandle * ec     ]   out_neighbors
-    //   [ EdgeData   * ec     ]   out_edge_data
-    //   [ NodeHandle * nc     ]   parent
-    //   [ EdgeData   * nc     ]   parent_edge_data  (parallel to parent)
-    //   [ NodeHandle * nc     ]   topo_order
+        [[nodiscard]] constexpr std::size_t node_count() const noexcept
+        {
+            return topological_order.size();
+        }
 
-    template<typename NodeData, typename EdgeData>
-    struct Polytree {
-        std::span<const NodeData>   node_data;
+        [[nodiscard]] constexpr std::size_t level_count() const noexcept
+        {
+            return dependency_level_offsets.empty()
+                ? 0
+                : dependency_level_offsets.size() - 1;
+        }
 
-        // out-CSR (children) — identical to DAG
-        std::span<const uint32_t>   out_offsets;    // size = nc + 1
-        std::span<const NodeHandle> out_neighbors;
-        std::span<const EdgeData>   out_edge_data;  // parallel to out_neighbors
+        [[nodiscard]] constexpr std::span<const NodeHandle> dependency_level(
+            std::size_t index) const noexcept
+        {
+            if (index >= level_count())
+            {
+                return {};
+            }
 
-        // single parent per node
-        std::span<const NodeHandle> parent;          // size = nc
-        std::span<const EdgeData>   parent_edge_data;// size = nc, parallel to parent
-
-        // cached topological order
-        std::span<const NodeHandle> topo_order;
+            const auto first = dependency_level_offsets[index];
+            const auto last = dependency_level_offsets[index + 1];
+            return dependency_order.subspan(first, last - first);
+        }
     };
 
-
-    // ─── PolytreeStorage ──────────────────────────────────────────────────────────
+    // A compact immutable forest. Every span points into PolytreeStorage::buffer.
+    // Cached evaluation data is invalidated only when the owning storage is destroyed
+    // or moved-from. Querying a valid node never allocates.
+    template<typename NodeData, typename EdgeData>
+    struct Polytree
+    {
+        std::span<const NodeData> node_data;
+        std::span<const std::uint32_t> out_offsets;
+        std::span<const NodeHandle> out_neighbors;
+        std::span<const EdgeData> out_edge_data;
+        std::span<const NodeHandle> parent;
+        std::span<const EdgeData> parent_edge_data;
+        std::span<const NodeHandle> topo_order;
+        std::span<const NodeHandle> reverse_topo_order;
+        std::span<const NodeHandle> root_order;
+        std::span<const NodeHandle> dependency_order;
+        std::span<const std::uint32_t> dependency_level_offsets;
+    };
 
     template<typename NodeData, typename EdgeData>
-    struct PolytreeStorage {
+    struct PolytreeStorage
+    {
         std::unique_ptr<std::byte[]> buffer;
         Polytree<NodeData, EdgeData> polytree;
     };
 
-
-    // ─── PolytreeBuilder ──────────────────────────────────────────────────────────
-
     template<typename NodeData, typename EdgeData>
-    struct PolytreeBuilder {
-        struct PendingEdge {
-            NodeHandle from, to;
-            EdgeData   data;
+    struct PolytreeBuilder
+    {
+        struct PendingEdge
+        {
+            NodeHandle from;
+            NodeHandle to;
+            EdgeData data;
         };
 
-        std::vector<NodeData>    nodes;
+        std::vector<NodeData> nodes;
         std::vector<PendingEdge> edges;
-        std::vector<NodeHandle>  parent_of; // tracks which nodes already have a parent
+        std::vector<NodeHandle> parent_of;
     };
 
-
-    // ─── Builder operations ───────────────────────────────────────────────────────
-
     template<typename N, typename E>
-    NodeHandle add_node(PolytreeBuilder<N, E>& b, N data) {
-        NodeHandle h = static_cast<NodeHandle>(b.nodes.size());
-        b.nodes.push_back(std::move(data));
-        b.parent_of.push_back(INVALID_NODE);
-        return h;
+    NodeHandle add_node(PolytreeBuilder<N, E>& builder, N data)
+    {
+        const auto handle = static_cast<NodeHandle>(builder.nodes.size());
+        builder.nodes.push_back(std::move(data));
+        builder.parent_of.push_back(INVALID_NODE);
+        return handle;
     }
 
-    // Returns false if:
-    //   - handles are out of range
-    //   - self-loop
-    //   - 'to' already has a parent (polytree invariant)
     template<typename N, typename E>
-    bool add_edge(PolytreeBuilder<N, E>& b, NodeHandle from, NodeHandle to, E data = {}) {
-        if (from >= b.nodes.size() || to >= b.nodes.size()) return false;
-        if (from == to)                                      return false;
-        if (b.parent_of[to] != INVALID_NODE)                return false; // invariant
-        b.parent_of[to] = from;
-        b.edges.push_back({ from, to, std::move(data) });
+    bool add_edge(
+        PolytreeBuilder<N, E>& builder,
+        NodeHandle from,
+        NodeHandle to,
+        E data = {})
+    {
+        if (from >= builder.nodes.size() || to >= builder.nodes.size())
+        {
+            return false;
+        }
+        if (from == to || builder.parent_of[to] != INVALID_NODE)
+        {
+            return false;
+        }
+
+        builder.parent_of[to] = from;
+        builder.edges.push_back({from, to, std::move(data)});
         return true;
     }
 
-
-    // ─── Polytree queries ─────────────────────────────────────────────────────────
-
     template<typename N, typename E>
-    uint32_t node_count(const Polytree<N, E>& t) {
-        return static_cast<uint32_t>(t.node_data.size());
+    std::uint32_t node_count(const Polytree<N, E>& tree)
+    {
+        return static_cast<std::uint32_t>(tree.node_data.size());
     }
 
     template<typename N, typename E>
-    uint32_t edge_count(const Polytree<N, E>& t) {
-        return static_cast<uint32_t>(t.out_neighbors.size());
+    std::uint32_t edge_count(const Polytree<N, E>& tree)
+    {
+        return static_cast<std::uint32_t>(tree.out_neighbors.size());
     }
 
     template<typename N, typename E>
-    const N& node_data(const Polytree<N, E>& t, NodeHandle n) {
-        return t.node_data[n];
+    const N& node_data(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        return tree.node_data[node];
     }
 
     template<typename N, typename E>
-    std::span<const NodeHandle> children(const Polytree<N, E>& t, NodeHandle n) {
-        return t.out_neighbors.subspan(t.out_offsets[n],
-            t.out_offsets[n + 1] - t.out_offsets[n]);
-    }
-
-    // O(1) — direct array lookup, no span subrange needed
-    template<typename N, typename E>
-    NodeHandle parent(const Polytree<N, E>& t, NodeHandle n) {
-        return t.parent[n];
+    std::span<const NodeHandle> children(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        const auto first = tree.out_offsets[node];
+        return tree.out_neighbors.subspan(first, tree.out_offsets[node + 1] - first);
     }
 
     template<typename N, typename E>
-    const E& parent_edge_data(const Polytree<N, E>& t, NodeHandle n) {
-        return t.parent_edge_data[n];
+    NodeHandle parent(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        return tree.parent[node];
     }
 
     template<typename N, typename E>
-    std::span<const E> outgoing_edge_data(const Polytree<N, E>& t, NodeHandle n) {
-        return t.out_edge_data.subspan(t.out_offsets[n],
-            t.out_offsets[n + 1] - t.out_offsets[n]);
+    const E& parent_edge_data(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        return tree.parent_edge_data[node];
     }
 
     template<typename N, typename E>
-    bool is_root(const Polytree<N, E>& t, NodeHandle n) {
-        return t.parent[n] == INVALID_NODE;
+    std::span<const E> outgoing_edge_data(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        const auto first = tree.out_offsets[node];
+        return tree.out_edge_data.subspan(first, tree.out_offsets[node + 1] - first);
     }
 
     template<typename N, typename E>
-    bool is_leaf(const Polytree<N, E>& t, NodeHandle n) {
-        return t.out_offsets[n] == t.out_offsets[n + 1];
+    bool is_root(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        return tree.parent[node] == INVALID_NODE;
     }
 
     template<typename N, typename E>
-    bool has_edge(const Polytree<N, E>& t, NodeHandle from, NodeHandle to) {
-        auto ch = children(t, from);
-        return std::find(ch.begin(), ch.end(), to) != ch.end();
+    bool is_leaf(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        return tree.out_offsets[node] == tree.out_offsets[node + 1];
     }
 
     template<typename N, typename E>
-    std::span<const NodeHandle> topo_order(const Polytree<N, E>& t) {
-        return t.topo_order;
+    bool has_edge(const Polytree<N, E>& tree, NodeHandle from, NodeHandle to)
+    {
+        const auto child_nodes = children(tree, from);
+        return std::ranges::find(child_nodes, to) != child_nodes.end();
     }
-
-    // ─── Document-tree child helpers ──────────────────────────────────────────────
 
     template<typename N, typename E>
-    uint32_t child_count(const Polytree<N, E>& t, NodeHandle n) {
-        return t.out_offsets[n + 1] - t.out_offsets[n];
+    std::span<const NodeHandle> topo_order(const Polytree<N, E>& tree)
+    {
+        return tree.topo_order;
     }
 
-    // Returns INVALID_NODE if index is out of range.
     template<typename N, typename E>
-    NodeHandle child_at(const Polytree<N, E>& t, NodeHandle n, uint32_t index) {
-        auto ch = children(t, n);
-        if (index >= ch.size()) return INVALID_NODE;
-        return ch[index];
+    std::span<const NodeHandle> reverse_topo_order(const Polytree<N, E>& tree)
+    {
+        return tree.reverse_topo_order;
     }
 
-    // Returns nullptr if index is out of range.
     template<typename N, typename E>
-    const E* child_edge_data_at(const Polytree<N, E>& t, NodeHandle n, uint32_t index) {
-        auto ed = outgoing_edge_data(t, n);
-        if (index >= ed.size()) return nullptr;
-        return &ed[index];
+    std::span<const NodeHandle> roots(const Polytree<N, E>& tree)
+    {
+        return tree.root_order;
     }
 
+    template<typename N, typename E>
+    std::span<const NodeHandle> dependency_order(const Polytree<N, E>& tree)
+    {
+        return tree.dependency_order;
+    }
 
-    // ─── Traversal ────────────────────────────────────────────────────────────────
+    template<typename N, typename E>
+    std::span<const std::uint32_t> dependency_level_offsets(
+        const Polytree<N, E>& tree)
+    {
+        return tree.dependency_level_offsets;
+    }
+
+    template<typename N, typename E>
+    PolytreeEvaluationPlan evaluation_plan(const Polytree<N, E>& tree)
+    {
+        return {
+            tree.topo_order,
+            tree.reverse_topo_order,
+            tree.root_order,
+            tree.dependency_order,
+            tree.dependency_level_offsets,
+        };
+    }
+
+    template<typename N, typename E>
+    std::span<const NodeHandle> dependency_level(
+        const Polytree<N, E>& tree,
+        std::size_t index)
+    {
+        return evaluation_plan(tree).dependency_level(index);
+    }
+
+    template<typename N, typename E>
+    std::uint32_t child_count(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        return tree.out_offsets[node + 1] - tree.out_offsets[node];
+    }
+
+    template<typename N, typename E>
+    NodeHandle child_at(
+        const Polytree<N, E>& tree,
+        NodeHandle node,
+        std::uint32_t index)
+    {
+        const auto child_nodes = children(tree, node);
+        return index < child_nodes.size() ? child_nodes[index] : INVALID_NODE;
+    }
+
+    template<typename N, typename E>
+    const E* child_edge_data_at(
+        const Polytree<N, E>& tree,
+        NodeHandle node,
+        std::uint32_t index)
+    {
+        const auto edge_data = outgoing_edge_data(tree, node);
+        return index < edge_data.size() ? &edge_data[index] : nullptr;
+    }
+
+    // Canonical descendant/ancestor traversal forms. Each function returns one
+    // owning contiguous order. DFS and BFS allocate O(subtree size); ancestors
+    // allocate O(depth). The orders remain valid independently of the tree view.
+    template<typename N, typename E>
+    std::vector<NodeHandle> depth_first_order(
+        const Polytree<N, E>& tree,
+        NodeHandle root)
+    {
+        std::vector<NodeHandle> order;
+        std::vector<NodeHandle> stack{root};
+        order.reserve(node_count(tree));
+
+        const auto pending = std::views::iota(std::size_t{0})
+            | std::views::take_while([&stack](std::size_t) { return !stack.empty(); });
+        std::ranges::for_each(pending, [&](std::size_t)
+        {
+            const auto node = stack.back();
+            stack.pop_back();
+            order.push_back(node);
+            std::ranges::copy(children(tree, node), std::back_inserter(stack));
+        });
+        return order;
+    }
+
+    template<typename N, typename E>
+    std::vector<NodeHandle> breadth_first_order(
+        const Polytree<N, E>& tree,
+        NodeHandle root)
+    {
+        std::vector<NodeHandle> order{root};
+        order.reserve(node_count(tree));
+
+        const auto pending = std::views::iota(std::size_t{0})
+            | std::views::take_while(
+                [&order](std::size_t head) { return head < order.size(); });
+        std::ranges::for_each(pending, [&](std::size_t head)
+        {
+            std::ranges::copy(
+                children(tree, order[head]),
+                std::back_inserter(order));
+        });
+        return order;
+    }
+
+    template<typename N, typename E>
+    std::vector<NodeHandle> ancestor_order(
+        const Polytree<N, E>& tree,
+        NodeHandle node)
+    {
+        std::vector<NodeHandle> order;
+        auto current = parent(tree, node);
+        const auto pending = std::views::iota(std::size_t{0})
+            | std::views::take_while(
+                [&current](std::size_t) { return current != INVALID_NODE; });
+        std::ranges::for_each(pending, [&](std::size_t)
+        {
+            order.push_back(current);
+            current = parent(tree, current);
+        });
+        return order;
+    }
+
+    // Compatibility visitor adapters consume the canonical contiguous orders.
+    template<typename N, typename E, typename Visitor>
+        requires std::invocable<Visitor&, NodeHandle>
+    void dfs(const Polytree<N, E>& tree, NodeHandle root, Visitor&& visitor)
+    {
+        const auto order = depth_first_order(tree, root);
+        std::ranges::for_each(order, [&](NodeHandle node)
+        {
+            std::invoke(visitor, node);
+        });
+    }
 
     template<typename N, typename E, typename Visitor>
-    void dfs(const Polytree<N, E>& t, NodeHandle root, Visitor&& visit) {
-        std::vector<bool>       visited(node_count(t), false);
-        std::vector<NodeHandle> stack;
-        stack.push_back(root);
-        while (!stack.empty()) {
-            NodeHandle n = stack.back(); stack.pop_back();
-            if (visited[n]) continue;
-            visited[n] = true;
-            visit(n);
-            for (NodeHandle child : children(t, n))
-                stack.push_back(child); // no visited check needed — tree structure
-        }
+        requires std::invocable<Visitor&, NodeHandle>
+    void bfs(const Polytree<N, E>& tree, NodeHandle root, Visitor&& visitor)
+    {
+        const auto order = breadth_first_order(tree, root);
+        std::ranges::for_each(order, [&](NodeHandle node)
+        {
+            std::invoke(visitor, node);
+        });
     }
 
     template<typename N, typename E, typename Visitor>
-    void bfs(const Polytree<N, E>& t, NodeHandle root, Visitor&& visit) {
-        // No visited guard needed for children — each node has exactly one parent
-        // so the child sets are disjoint. Guard kept on the queue for safety.
-        std::vector<bool>       visited(node_count(t), false);
-        std::vector<NodeHandle> queue;
-        queue.push_back(root);
-        visited[root] = true;
-        for (uint32_t head = 0; head < queue.size(); ++head) {
-            NodeHandle n = queue[head];
-            visit(n);
-            for (NodeHandle child : children(t, n))
-                if (!visited[child]) { visited[child] = true; queue.push_back(child); }
-        }
+        requires std::invocable<Visitor&, NodeHandle>
+    void walk_ancestors(
+        const Polytree<N, E>& tree,
+        NodeHandle node,
+        Visitor&& visitor)
+    {
+        const auto order = ancestor_order(tree, node);
+        std::ranges::for_each(order, [&](NodeHandle ancestor)
+        {
+            std::invoke(visitor, ancestor);
+        });
     }
 
-    // Ancestor walk — O(depth), unique to polytree, not possible on DAG
-    template<typename N, typename E, typename Visitor>
-    void walk_ancestors(const Polytree<N, E>& t, NodeHandle n, Visitor&& visit) {
-        NodeHandle cur = parent(t, n);
-        while (cur != INVALID_NODE) {
-            visit(cur);
-            cur = parent(t, cur);
+    namespace detail
+    {
+        template<typename T>
+        std::byte* polytree_carve(
+            std::byte* pointer,
+            std::byte* end,
+            std::size_t count,
+            std::span<T>& output)
+        {
+            constexpr auto alignment = alignof(T);
+            auto address = reinterpret_cast<std::uintptr_t>(pointer);
+            address = (address + alignment - 1) & ~(alignment - 1);
+            pointer = reinterpret_cast<std::byte*>(address);
+            assert(pointer + count * sizeof(T) <= end);
+            output = {reinterpret_cast<T*>(pointer), count};
+            return pointer + count * sizeof(T);
         }
-    }
-
-
-    // ─── build() ─────────────────────────────────────────────────────────────────
-
-    namespace detail {
 
         template<typename N, typename E>
         std::vector<NodeHandle> polytree_kahn_topo(
-            uint32_t nc,
+            std::uint32_t node_total,
             const std::vector<typename PolytreeBuilder<N, E>::PendingEdge>& edges)
         {
-            std::vector<std::vector<NodeHandle>> adj(nc);
-            std::vector<uint32_t>               in_degree(nc, 0);
-            for (auto& e : edges) { adj[e.from].push_back(e.to); ++in_degree[e.to]; }
+            std::vector<std::vector<NodeHandle>> adjacency(node_total);
+            std::vector<std::uint32_t> in_degree(node_total, 0);
+            std::ranges::for_each(edges, [&](const auto& edge)
+            {
+                adjacency[edge.from].push_back(edge.to);
+                ++in_degree[edge.to];
+            });
 
-            std::vector<NodeHandle> queue, order;
-            order.reserve(nc);
-            for (uint32_t i = 0; i < nc; ++i)
-                if (in_degree[i] == 0) queue.push_back(i);
-            while (!queue.empty()) {
-                NodeHandle n = queue.back(); queue.pop_back();
-                order.push_back(n);
-                for (NodeHandle c : adj[n])
-                    if (--in_degree[c] == 0) queue.push_back(c);
-            }
-            return (order.size() == nc) ? order : std::vector<NodeHandle>{};
+            std::vector<NodeHandle> queue;
+            std::vector<NodeHandle> order;
+            order.reserve(node_total);
+            auto root_candidates = std::views::iota(NodeHandle{0}, node_total)
+                | std::views::filter(
+                    [&in_degree](NodeHandle node) { return in_degree[node] == 0; });
+            std::ranges::copy(root_candidates, std::back_inserter(queue));
+
+            const auto pending = std::views::iota(std::size_t{0})
+                | std::views::take_while(
+                    [&queue](std::size_t) { return !queue.empty(); });
+            std::ranges::for_each(pending, [&](std::size_t)
+            {
+                const auto node = queue.back();
+                queue.pop_back();
+                order.push_back(node);
+                std::ranges::for_each(adjacency[node], [&](NodeHandle child)
+                {
+                    if (--in_degree[child] == 0)
+                    {
+                        queue.push_back(child);
+                    }
+                });
+            });
+            return order.size() == node_total ? order : std::vector<NodeHandle>{};
         }
 
-    } // namespace detail
-
-
-    // Consumes the builder. Returns nullopt if a cycle is detected.
-    template<typename N, typename E>
-    std::optional<PolytreeStorage<N, E>> build(PolytreeBuilder<N, E> b) {
-        const uint32_t nc = static_cast<uint32_t>(b.nodes.size());
-        const uint32_t ec = static_cast<uint32_t>(b.edges.size());
-
-        auto topo = detail::polytree_kahn_topo<N, E>(nc, b.edges);
-        if (topo.empty() && nc > 0) return std::nullopt;
-
-        // Sort edges by 'from' for out-CSR
-        std::sort(b.edges.begin(), b.edges.end(),
-            [](auto& a, auto& x) { return a.from < x.from; });
-
-        const size_t buf_size =
-            sizeof(N) * nc + alignof(N)
-            + sizeof(uint32_t) * (nc + 1) + alignof(uint32_t)
-            + sizeof(NodeHandle) * ec + alignof(NodeHandle)
-            + sizeof(E) * ec + alignof(E)
-            + sizeof(NodeHandle) * nc + alignof(NodeHandle) // parent
-            + sizeof(E) * nc + alignof(E)          // parent_edge_data
-            + sizeof(NodeHandle) * nc + alignof(NodeHandle);// topo_order
-
-        auto buf = std::make_unique<std::byte[]>(buf_size);
-        std::byte* ptr = buf.get();
-        std::byte* end = ptr + buf_size;
-
-        std::span<N>          node_data_w;
-        std::span<uint32_t>   out_off_w;
-        std::span<NodeHandle> out_nbr_w;
-        std::span<E>          out_ed_w;
-        std::span<NodeHandle> parent_w;
-        std::span<E>          parent_ed_w;
-        std::span<NodeHandle> topo_w;
-
-        ptr = detail::carve(ptr, end, nc, node_data_w);
-        ptr = detail::carve(ptr, end, nc + 1, out_off_w);
-        ptr = detail::carve(ptr, end, ec, out_nbr_w);
-        ptr = detail::carve(ptr, end, ec, out_ed_w);
-        ptr = detail::carve(ptr, end, nc, parent_w);
-        ptr = detail::carve(ptr, end, nc, parent_ed_w);
-        ptr = detail::carve(ptr, end, nc, topo_w);
-
-        // node data
-        for (uint32_t i = 0; i < nc; ++i)
-            new (&node_data_w[i]) N(std::move(b.nodes[i]));
-
-        // out-CSR
-        std::fill(out_off_w.begin(), out_off_w.end(), 0u);
-        for (auto& e : b.edges) ++out_off_w[e.from + 1];
-        std::partial_sum(out_off_w.begin(), out_off_w.end(), out_off_w.begin());
-
-        std::vector<uint32_t> cursor(out_off_w.begin(), out_off_w.end());
-        for (auto& e : b.edges) {
-            uint32_t pos = cursor[e.from]++;
-            out_nbr_w[pos] = e.to;
-            out_ed_w[pos] = e.data;
-        }
-
-        // parent array — sourced from builder's parent_of tracking
-        for (uint32_t i = 0; i < nc; ++i)
-            parent_w[i] = b.parent_of[i];
-
-        // parent edge data — find each node's incoming edge data
-        std::fill(parent_ed_w.begin(), parent_ed_w.end(), E{});
-        for (auto& e : b.edges)
-            parent_ed_w[e.to] = e.data;
-
-        // topo order
-        std::copy(topo.begin(), topo.end(), topo_w.begin());
-
-        Polytree<N, E> t{
-            .node_data = node_data_w,
-            .out_offsets = out_off_w,
-            .out_neighbors = out_nbr_w,
-            .out_edge_data = out_ed_w,
-            .parent = parent_w,
-            .parent_edge_data = parent_ed_w,
-            .topo_order = topo_w,
+        struct plan_storage
+        {
+            std::vector<NodeHandle> topological;
+            std::vector<NodeHandle> reverse_topological;
+            std::vector<NodeHandle> roots;
+            std::vector<NodeHandle> dependency;
+            std::vector<std::uint32_t> level_offsets;
         };
 
-        return PolytreeStorage<N, E>{ std::move(buf), t };
+        inline plan_storage make_plan(
+            std::vector<NodeHandle> topological,
+            std::span<const NodeHandle> parents)
+        {
+            plan_storage plan;
+            plan.topological = std::move(topological);
+            plan.reverse_topological = plan.topological;
+            std::ranges::reverse(plan.reverse_topological);
+
+            const auto candidates = std::views::iota(
+                NodeHandle{0},
+                static_cast<NodeHandle>(parents.size()));
+            auto root_nodes = candidates
+                | std::views::filter(
+                    [parents](NodeHandle node) { return parents[node] == INVALID_NODE; });
+            std::ranges::copy(root_nodes, std::back_inserter(plan.roots));
+
+            if (parents.empty())
+            {
+                plan.level_offsets.push_back(0);
+                return plan;
+            }
+
+            std::vector<std::uint32_t> levels(parents.size(), 0);
+            std::ranges::for_each(plan.topological, [&](NodeHandle node)
+            {
+                const auto parent_node = parents[node];
+                levels[node] = parent_node == INVALID_NODE ? 0 : levels[parent_node] + 1;
+            });
+
+            const auto level_count = *std::ranges::max_element(levels) + 1;
+            plan.level_offsets.assign(level_count + 1, 0);
+            std::ranges::for_each(levels, [&](std::uint32_t level)
+            {
+                ++plan.level_offsets[level + 1];
+            });
+            std::partial_sum(
+                plan.level_offsets.begin(),
+                plan.level_offsets.end(),
+                plan.level_offsets.begin());
+
+            plan.dependency.resize(parents.size());
+            auto cursor = plan.level_offsets;
+            std::ranges::for_each(plan.topological, [&](NodeHandle node)
+            {
+                plan.dependency[cursor[levels[node]]++] = node;
+            });
+            return plan;
+        }
     }
 
-} // namespace wz::core::graph
+    // Consumes the builder. Temporary construction storage is O(nodes + edges).
+    // The resulting cached plan is immutable and all of its ranges are contiguous.
+    template<typename N, typename E>
+    std::optional<PolytreeStorage<N, E>> build(PolytreeBuilder<N, E> builder)
+    {
+        const auto node_total = static_cast<std::uint32_t>(builder.nodes.size());
+        const auto edge_total = static_cast<std::uint32_t>(builder.edges.size());
+        auto topological = detail::polytree_kahn_topo<N, E>(node_total, builder.edges);
+        if (topological.empty() && node_total > 0)
+        {
+            return std::nullopt;
+        }
+
+        auto plan = detail::make_plan(std::move(topological), builder.parent_of);
+        std::stable_sort(
+            builder.edges.begin(),
+            builder.edges.end(),
+            [](const auto& left, const auto& right) { return left.from < right.from; });
+
+        const std::size_t buffer_size =
+            sizeof(N) * node_total + alignof(N)
+            + sizeof(std::uint32_t) * (node_total + 1) + alignof(std::uint32_t)
+            + sizeof(NodeHandle) * edge_total + alignof(NodeHandle)
+            + sizeof(E) * edge_total + alignof(E)
+            + sizeof(NodeHandle) * node_total + alignof(NodeHandle)
+            + sizeof(E) * node_total + alignof(E)
+            + sizeof(NodeHandle) * node_total + alignof(NodeHandle)
+            + sizeof(NodeHandle) * node_total + alignof(NodeHandle)
+            + sizeof(NodeHandle) * plan.roots.size() + alignof(NodeHandle)
+            + sizeof(NodeHandle) * node_total + alignof(NodeHandle)
+            + sizeof(std::uint32_t) * plan.level_offsets.size() + alignof(std::uint32_t);
+
+        auto buffer = std::make_unique<std::byte[]>(buffer_size);
+        auto* pointer = buffer.get();
+        auto* const end = pointer + buffer_size;
+        std::span<N> node_data_output;
+        std::span<std::uint32_t> out_offsets_output;
+        std::span<NodeHandle> out_neighbors_output;
+        std::span<E> out_edge_data_output;
+        std::span<NodeHandle> parent_output;
+        std::span<E> parent_edge_data_output;
+        std::span<NodeHandle> topological_output;
+        std::span<NodeHandle> reverse_topological_output;
+        std::span<NodeHandle> roots_output;
+        std::span<NodeHandle> dependency_output;
+        std::span<std::uint32_t> level_offsets_output;
+
+        pointer = detail::polytree_carve(
+            pointer, end, node_total, node_data_output);
+        pointer = detail::polytree_carve(
+            pointer, end, node_total + 1, out_offsets_output);
+        pointer = detail::polytree_carve(
+            pointer, end, edge_total, out_neighbors_output);
+        pointer = detail::polytree_carve(
+            pointer, end, edge_total, out_edge_data_output);
+        pointer = detail::polytree_carve(
+            pointer, end, node_total, parent_output);
+        pointer = detail::polytree_carve(
+            pointer, end, node_total, parent_edge_data_output);
+        pointer = detail::polytree_carve(
+            pointer, end, node_total, topological_output);
+        pointer = detail::polytree_carve(
+            pointer, end, node_total, reverse_topological_output);
+        pointer = detail::polytree_carve(
+            pointer, end, plan.roots.size(), roots_output);
+        pointer = detail::polytree_carve(
+            pointer, end, node_total, dependency_output);
+        detail::polytree_carve(
+            pointer, end, plan.level_offsets.size(), level_offsets_output);
+
+        const auto node_indices = std::views::iota(NodeHandle{0}, node_total);
+        std::ranges::for_each(node_indices, [&](NodeHandle index)
+        {
+            new (&node_data_output[index]) N(std::move(builder.nodes[index]));
+        });
+
+        std::ranges::fill(out_offsets_output, 0u);
+        std::ranges::for_each(builder.edges, [&](const auto& edge)
+        {
+            ++out_offsets_output[edge.from + 1];
+        });
+        std::partial_sum(
+            out_offsets_output.begin(),
+            out_offsets_output.end(),
+            out_offsets_output.begin());
+
+        std::vector<std::uint32_t> cursor(
+            out_offsets_output.begin(),
+            out_offsets_output.end());
+        std::ranges::for_each(builder.edges, [&](const auto& edge)
+        {
+            const auto position = cursor[edge.from]++;
+            out_neighbors_output[position] = edge.to;
+            out_edge_data_output[position] = edge.data;
+        });
+
+        std::ranges::copy(builder.parent_of, parent_output.begin());
+        std::ranges::fill(parent_edge_data_output, E{});
+        std::ranges::for_each(builder.edges, [&](const auto& edge)
+        {
+            parent_edge_data_output[edge.to] = edge.data;
+        });
+        std::ranges::copy(plan.topological, topological_output.begin());
+        std::ranges::copy(
+            plan.reverse_topological,
+            reverse_topological_output.begin());
+        std::ranges::copy(plan.roots, roots_output.begin());
+        std::ranges::copy(plan.dependency, dependency_output.begin());
+        std::ranges::copy(plan.level_offsets, level_offsets_output.begin());
+
+        Polytree<N, E> tree{
+            .node_data = node_data_output,
+            .out_offsets = out_offsets_output,
+            .out_neighbors = out_neighbors_output,
+            .out_edge_data = out_edge_data_output,
+            .parent = parent_output,
+            .parent_edge_data = parent_edge_data_output,
+            .topo_order = topological_output,
+            .reverse_topo_order = reverse_topological_output,
+            .root_order = roots_output,
+            .dependency_order = dependency_output,
+            .dependency_level_offsets = level_offsets_output,
+        };
+        return PolytreeStorage<N, E>{std::move(buffer), tree};
+    }
+}

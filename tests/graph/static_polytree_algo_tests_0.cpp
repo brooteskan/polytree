@@ -3,6 +3,9 @@
 #include <graph/static_polytree_algo.h>
 #include <algo/next.h>
 
+#include <algorithm>
+#include <array>
+
 using namespace wz::core::graph;
 using namespace wz::core::algo::next;
 
@@ -150,8 +153,9 @@ TEST(PolytreeAlgoSpec, TopoOrderPipelineFiltersActiveNodes)
 
     // root, a, c, d are active — b is not
     ASSERT_EQ(out.count, 4u);
-    for (auto n : out.result())
-        EXPECT_TRUE(node_data(t, n).active);
+    std::ranges::for_each(
+        out.result(),
+        [&](auto n) { EXPECT_TRUE(node_data(t, n).active); });
 }
 
 TEST(PolytreeAlgoSpec, TopoOrderPipelineMapsThenFilters)
@@ -167,8 +171,9 @@ TEST(PolytreeAlgoSpec, TopoOrderPipelineMapsThenFilters)
 
     // root and leaf are active, mid is not
     ASSERT_EQ(out.count, 2u);
-    for (auto& x : out.result())
-        EXPECT_TRUE(x.active);
+    std::ranges::for_each(
+        out.result(),
+        [](const auto& x) { EXPECT_TRUE(x.active); });
 }
 
 
@@ -181,8 +186,9 @@ TEST(PolytreeAlgoSpec, BFSMaterializeContainsAllNodes)
     auto order = bfs_materialize(storage.polytree, 0u, scratch);
 
     ASSERT_EQ(order.size(), 5u);
-    for (NodeHandle h : {0u, 1u, 2u, 3u, 4u})
-        EXPECT_EQ(std::count(order.begin(), order.end(), h), 1);
+    std::ranges::for_each(
+        std::array{0u, 1u, 2u, 3u, 4u},
+        [&](NodeHandle h) { EXPECT_EQ(std::count(order.begin(), order.end(), h), 1); });
 }
 
 TEST(PolytreeAlgoSpec, DFSMaterializeContainsAllNodes)
@@ -192,8 +198,9 @@ TEST(PolytreeAlgoSpec, DFSMaterializeContainsAllNodes)
     auto order = dfs_materialize(storage.polytree, 0u, scratch);
 
     ASSERT_EQ(order.size(), 5u);
-    for (NodeHandle h : {0u, 1u, 2u, 3u, 4u})
-        EXPECT_EQ(std::count(order.begin(), order.end(), h), 1);
+    std::ranges::for_each(
+        std::array{0u, 1u, 2u, 3u, 4u},
+        [&](NodeHandle h) { EXPECT_EQ(std::count(order.begin(), order.end(), h), 1); });
 }
 
 TEST(PolytreeAlgoSpec, MaterializeTruncatesWhenScratchExhausted)
@@ -220,8 +227,9 @@ TEST(PolytreeAlgoSpec, BFSMaterializeIntoThenPipe)
     pipe(order, out);
 
     ASSERT_EQ(out.count, 4u);
-    for (auto& x : out.result())
-        EXPECT_TRUE(x.active);
+    std::ranges::for_each(
+        out.result(),
+        [](const auto& x) { EXPECT_TRUE(x.active); });
 }
 
 
@@ -240,8 +248,9 @@ TEST(PolytreeAlgoSpec, AsSinkBFSFiltersActiveNodes)
     bfs(t, 0u, sink);
 
     ASSERT_EQ(out.count, 4u);
-    for (auto& x : out.result())
-        EXPECT_TRUE(x.active);
+    std::ranges::for_each(
+        out.result(),
+        [](const auto& x) { EXPECT_TRUE(x.active); });
 }
 
 TEST(PolytreeAlgoSpec, AsSinkEarlyTerminationAbortsBFS)
@@ -271,8 +280,9 @@ TEST(PolytreeAlgoSpec, AsSinkDFSFiltersActiveNodes)
     dfs(t, 0u, sink);
 
     ASSERT_EQ(out.count, 2u);
-    for (auto& x : out.result())
-        EXPECT_TRUE(x.active);
+    std::ranges::for_each(
+        out.result(),
+        [](const auto& x) { EXPECT_TRUE(x.active); });
 }
 
 

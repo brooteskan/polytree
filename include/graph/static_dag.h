@@ -12,15 +12,9 @@
 #include <span>
 #include <vector>
 
+#include <graph/handles.h>
+
 namespace wz::core::graph {
-
-    // ─── Handles ─────────────────────────────────────────────────────────────────
-
-    using NodeHandle = uint32_t;
-    using EdgeHandle = uint32_t;
-
-    static constexpr NodeHandle INVALID_NODE = 0xFFFF'FFFFu;
-    static constexpr EdgeHandle INVALID_EDGE = 0xFFFF'FFFEu;
 
 
     // ─── DAG — pure view type, owns nothing ──────────────────────────────────────

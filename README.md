@@ -4,9 +4,10 @@
 Wozzits Engine project.
 
 The faithful Wozzits extraction remains available at the
-`v0.0.1-wozzits-baseline` tag. Current development proceeds from that working,
-measurable baseline; the graph traversal adapters now use the canonical
-`algo::next` API.
+`v0.0.1-wozzits-baseline` tag. Version 0.1.0 preserves its valid-tree traversal
+orders while making contiguous traversal ranges and cached evaluation plans the
+primary contract. Sequential sink adapters use `algo::next` and report explicit
+completion or truncation.
 
 ## CMake target
 
@@ -24,14 +25,35 @@ Existing include paths remain valid:
 
 The installed package requires `algo::algo`.
 
+## Evaluation plans
+
+Every built static polytree caches contiguous topological, reverse-topological,
+root, and dependency-level ranges in its single backing allocation:
+
+```cpp
+const auto plan = wz::core::graph::evaluation_plan(storage.polytree);
+
+consume(plan.topological_order);
+consume(plan.reverse_topological_order);
+consume(plan.roots);
+consume(plan.dependency_level(0));
+```
+
+`depth_first_order`, `breadth_first_order`, and `ancestor_order` return owning
+contiguous ranges. Existing `dfs`, `bfs`, and `walk_ancestors` visitor and sink
+forms remain adapters over those ranges. Scratch materializers return a
+`PolytreeMaterialization` containing both the written span and an
+`algo::next::execution_status`.
+
 ## Baseline status
 
-The baseline intentionally includes the complete `static_dag.h` dependency
-and retains the original `wz::core::graph` namespace, traversal code, storage,
-ordering, and failure behavior. These are baseline facts rather than final API
-commitments.
+The baseline intentionally included the complete `static_dag.h` dependency.
+The current static-polytree headers use the narrow `graph/handles.h` contract;
+the legacy DAG header remains only for source compatibility and is not in the
+polytree dependency closure.
 
-See [BASELINE.md](BASELINE.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+See [BASELINE.md](BASELINE.md), [TRAVERSAL.md](TRAVERSAL.md), and
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## Build and test
 

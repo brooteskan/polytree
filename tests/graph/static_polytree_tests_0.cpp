@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include <graph/static_polytree.h>
 
+#include <algorithm>
+#include <array>
+
 using namespace wz::core::graph;
 
 struct Transform { float x, y, z; };
@@ -261,9 +264,11 @@ TEST(PolytreeSpec, DFSVisitsAllNodes)
     dfs(t, 0u, [&](NodeHandle n) { visited.push_back(n); });
 
     ASSERT_EQ(visited.size(), 5u);
-    for (NodeHandle h : {0u, 1u, 2u, 3u, 4u})
+    std::ranges::for_each(std::array{0u, 1u, 2u, 3u, 4u}, [&](NodeHandle h)
+    {
         EXPECT_EQ(std::count(visited.begin(), visited.end(), h), 1)
-        << "handle " << h << " not visited exactly once";
+            << "handle " << h << " not visited exactly once";
+    });
 }
 
 TEST(PolytreeSpec, BFSVisitsAllNodes)
@@ -275,9 +280,11 @@ TEST(PolytreeSpec, BFSVisitsAllNodes)
     bfs(t, 0u, [&](NodeHandle n) { visited.push_back(n); });
 
     ASSERT_EQ(visited.size(), 5u);
-    for (NodeHandle h : {0u, 1u, 2u, 3u, 4u})
+    std::ranges::for_each(std::array{0u, 1u, 2u, 3u, 4u}, [&](NodeHandle h)
+    {
         EXPECT_EQ(std::count(visited.begin(), visited.end(), h), 1)
-        << "handle " << h << " not visited exactly once";
+            << "handle " << h << " not visited exactly once";
+    });
 }
 
 TEST(PolytreeSpec, BFSVisitsInLevelOrder)

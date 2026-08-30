@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     polytree
-    VERSION 0.0.1
-    DESCRIPTION "Compact static polytree extracted from Wozzits"
+    VERSION 0.1.0
+    DESCRIPTION "Compact static polytree with cached evaluation plans"
     LANGUAGES CXX
 )
 

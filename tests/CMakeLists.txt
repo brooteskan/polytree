@@ -36,3 +36,26 @@ add_polytree_baseline_test(
     graph/static_polytree_algo_tests_0.cpp
     polytree.baseline.algorithms
 )
+
+add_executable(
+    polytree_test_traversal
+    graph/static_polytree_traversal_tests.cpp
+)
+target_link_libraries(
+    polytree_test_traversal
+    PRIVATE
+        polytree::polytree
+        GTest::gtest_main
+)
+add_test(NAME polytree.traversal COMMAND polytree_test_traversal)
+set_tests_properties(polytree.traversal PROPERTIES LABELS current)
+
+add_test(
+    NAME polytree.no_handwritten_loops
+    COMMAND
+        ${CMAKE_COMMAND}
+        -DPOLYTREE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+        -P
+        ${PROJECT_SOURCE_DIR}/tools/check_control_flow_policy.cmake
+)
+set_tests_properties(polytree.no_handwritten_loops PROPERTIES LABELS policy)
