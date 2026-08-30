@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 #include <graph/static_polytree.h>
 #include <graph/static_polytree_algo.h>
-#include <algo/pipeline.h>
+#include <algo/next.h>
 
 using namespace wz::core::graph;
-using namespace wz::core::algo::pipeline;
+using namespace wz::core::algo::next;
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 //

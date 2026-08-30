@@ -3,10 +3,10 @@
 `polytree` is a compact static polytree implementation extracted from the
 Wozzits Engine project.
 
-This initial version is deliberately a faithful baseline. The four graph
-headers and two legacy test files are preserved unchanged so dependency
-cleanup and functional-control-flow refactoring can proceed from a working,
-measurable extraction.
+The faithful Wozzits extraction remains available at the
+`v0.0.1-wozzits-baseline` tag. Current development proceeds from that working,
+measurable baseline; the graph traversal adapters now use the canonical
+`algo::next` API.
 
 ## CMake target
 
@@ -46,6 +46,6 @@ ctest --test-dir build --output-on-failure
 ```
 
 If neither `POLYTREE_ALGO_SOURCE_DIR` nor an installed `algo` package is
-provided, CMake fetches the pinned Wozzits baseline tag. Tests similarly use
-an installed GTest package when available and otherwise fetch their pinned
+provided, CMake fetches the pinned compatible `algo` revision. Tests similarly
+use an installed GTest package when available and otherwise fetch their pinned
 upstream version.

@@ -4,7 +4,7 @@
 
 #include <graph/static_polytree.h>
 #include <graph/concepts.h>
-#include <algo/pipeline.h>
+#include <algo/next.h>
 #include <span>
 #include <vector>
 
@@ -248,7 +248,8 @@ namespace wz::core::graph {
         Out& out;
 
         bool push(NodeHandle n) {
-            return pipe.apply_all(n, out);
+            const std::span<const NodeHandle> input{ &n, 1 };
+            return !algo::next::was_truncated(pipe(input, out));
         }
     };
 

@@ -44,7 +44,7 @@ if(NOT TARGET algo::algo)
     FetchContent_Declare(
         algo
         GIT_REPOSITORY https://github.com/brooteskan/algo.git
-        GIT_TAG v0.0.1-wozzits-baseline
+        GIT_TAG ea2e45f8c19ebe7deb44c85c91179e12fac57154
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(algo)

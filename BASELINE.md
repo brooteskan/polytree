@@ -1,5 +1,8 @@
 # Wozzits baseline
 
+This document records the contents of `v0.0.1-wozzits-baseline`. Checksums
+below describe that tag and are not assertions about later commits on `main`.
+
 The imported files come from Wozzits `master` at:
 
 ```text
