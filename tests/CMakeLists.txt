@@ -50,6 +50,19 @@ target_link_libraries(
 add_test(NAME polytree.traversal COMMAND polytree_test_traversal)
 set_tests_properties(polytree.traversal PROPERTIES LABELS current)
 
+add_executable(
+    polytree_test_mutable
+    graph/mutable_polytree_tests.cpp
+)
+target_link_libraries(
+    polytree_test_mutable
+    PRIVATE
+        polytree::polytree
+        GTest::gtest_main
+)
+add_test(NAME polytree.mutable COMMAND polytree_test_mutable)
+set_tests_properties(polytree.mutable PROPERTIES LABELS current)
+
 add_test(
     NAME polytree.no_handwritten_loops
     COMMAND

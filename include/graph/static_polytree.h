@@ -7,6 +7,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <optional>
 #include <ranges>
@@ -58,6 +59,10 @@ namespace wz::core::graph
     template<typename NodeData, typename EdgeData>
     struct Polytree
     {
+        using node_handle_type = NodeHandle;
+        using node_data_type = NodeData;
+        using edge_data_type = EdgeData;
+
         std::span<const NodeData> node_data;
         std::span<const std::uint32_t> out_offsets;
         std::span<const NodeHandle> out_neighbors;
@@ -74,8 +79,65 @@ namespace wz::core::graph
     template<typename NodeData, typename EdgeData>
     struct PolytreeStorage
     {
+        PolytreeStorage() = default;
+
+        PolytreeStorage(
+            std::unique_ptr<std::byte[]> owned_buffer,
+            Polytree<NodeData, EdgeData> owned_polytree) noexcept
+            : buffer(std::move(owned_buffer))
+            , polytree(owned_polytree)
+        {
+        }
+
+        PolytreeStorage(const PolytreeStorage&) = delete;
+        PolytreeStorage& operator=(const PolytreeStorage&) = delete;
+
+        PolytreeStorage(PolytreeStorage&& other) noexcept
+            : buffer(std::move(other.buffer))
+            , polytree(other.polytree)
+        {
+            other.polytree = {};
+        }
+
+        PolytreeStorage& operator=(PolytreeStorage&& other) noexcept
+        {
+            if (this != &other)
+            {
+                destroy_payloads();
+                buffer = std::move(other.buffer);
+                polytree = other.polytree;
+                other.polytree = {};
+            }
+            return *this;
+        }
+
+        ~PolytreeStorage()
+        {
+            destroy_payloads();
+        }
+
         std::unique_ptr<std::byte[]> buffer;
         Polytree<NodeData, EdgeData> polytree;
+
+    private:
+        void destroy_payloads() noexcept
+        {
+            if (!buffer)
+            {
+                return;
+            }
+
+            std::destroy_n(
+                const_cast<NodeData*>(polytree.node_data.data()),
+                polytree.node_data.size());
+            std::destroy_n(
+                const_cast<EdgeData*>(polytree.out_edge_data.data()),
+                polytree.out_edge_data.size());
+            std::destroy_n(
+                const_cast<EdgeData*>(polytree.parent_edge_data.data()),
+                polytree.parent_edge_data.size());
+            polytree = {};
+        }
     };
 
     template<typename NodeData, typename EdgeData>
@@ -133,6 +195,12 @@ namespace wz::core::graph
     std::uint32_t edge_count(const Polytree<N, E>& tree)
     {
         return static_cast<std::uint32_t>(tree.out_neighbors.size());
+    }
+
+    template<typename N, typename E>
+    bool contains(const Polytree<N, E>& tree, NodeHandle node)
+    {
+        return node < tree.node_data.size();
     }
 
     template<typename N, typename E>
@@ -550,38 +618,60 @@ namespace wz::core::graph
         detail::polytree_carve(
             pointer, end, plan.level_offsets.size(), level_offsets_output);
 
-        const auto node_indices = std::views::iota(NodeHandle{0}, node_total);
-        std::ranges::for_each(node_indices, [&](NodeHandle index)
+        std::size_t constructed_nodes = 0;
+        std::size_t constructed_out_edges = 0;
+        std::size_t constructed_parent_edges = 0;
+        try
         {
-            new (&node_data_output[index]) N(std::move(builder.nodes[index]));
-        });
+            const auto node_indices = std::views::iota(NodeHandle{0}, node_total);
+            std::ranges::for_each(node_indices, [&](NodeHandle index)
+            {
+                std::construct_at(
+                    &node_data_output[index],
+                    std::move(builder.nodes[index]));
+                ++constructed_nodes;
+            });
 
-        std::ranges::fill(out_offsets_output, 0u);
-        std::ranges::for_each(builder.edges, [&](const auto& edge)
-        {
-            ++out_offsets_output[edge.from + 1];
-        });
-        std::partial_sum(
-            out_offsets_output.begin(),
-            out_offsets_output.end(),
-            out_offsets_output.begin());
+            std::ranges::fill(out_offsets_output, 0u);
+            std::ranges::for_each(builder.edges, [&](const auto& edge)
+            {
+                ++out_offsets_output[edge.from + 1];
+            });
+            std::partial_sum(
+                out_offsets_output.begin(),
+                out_offsets_output.end(),
+                out_offsets_output.begin());
 
-        std::vector<std::uint32_t> cursor(
-            out_offsets_output.begin(),
-            out_offsets_output.end());
-        std::ranges::for_each(builder.edges, [&](const auto& edge)
-        {
-            const auto position = cursor[edge.from]++;
-            out_neighbors_output[position] = edge.to;
-            out_edge_data_output[position] = edge.data;
-        });
+            std::vector<std::uint32_t> cursor(
+                out_offsets_output.begin(),
+                out_offsets_output.end());
+            std::ranges::for_each(builder.edges, [&](const auto& edge)
+            {
+                const auto position = cursor[edge.from]++;
+                out_neighbors_output[position] = edge.to;
+                std::construct_at(&out_edge_data_output[position], edge.data);
+                ++constructed_out_edges;
+            });
 
-        std::ranges::copy(builder.parent_of, parent_output.begin());
-        std::ranges::fill(parent_edge_data_output, E{});
-        std::ranges::for_each(builder.edges, [&](const auto& edge)
+            std::ranges::copy(builder.parent_of, parent_output.begin());
+            std::uninitialized_value_construct_n(
+                parent_edge_data_output.data(),
+                node_total);
+            constructed_parent_edges = node_total;
+            std::ranges::for_each(builder.edges, [&](const auto& edge)
+            {
+                parent_edge_data_output[edge.to] = edge.data;
+            });
+        }
+        catch (...)
         {
-            parent_edge_data_output[edge.to] = edge.data;
-        });
+            std::destroy_n(node_data_output.data(), constructed_nodes);
+            std::destroy_n(out_edge_data_output.data(), constructed_out_edges);
+            std::destroy_n(
+                parent_edge_data_output.data(),
+                constructed_parent_edges);
+            throw;
+        }
         std::ranges::copy(plan.topological, topological_output.begin());
         std::ranges::copy(
             plan.reverse_topological,

@@ -21,9 +21,9 @@ These names preserve compatibility but are not a final public-API decision.
 Queries and traversal entry points assume a handle from the same valid built
 polytree. Invalid handles are unchecked, matching the baseline contract.
 
-## Payload lifetime
+## Payload requirements
 
-The compact allocation retains the extracted placement-construction and
-storage ownership model. Non-trivial payload destruction and allocation-failure
-recovery require a separate storage-lifetime pass before such payloads can be
-advertised as supported.
+Version 0.2.0 placement-constructs and destroys compact node and edge payloads,
+including partial-construction rollback. The static representation still keeps
+one parent-edge payload per node, including default-constructed root entries;
+edge payloads therefore remain default-initializable and copy-assignable.

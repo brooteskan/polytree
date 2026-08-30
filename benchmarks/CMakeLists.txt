@@ -1,0 +1,3 @@
+add_executable(polytree_freeze_benchmark freeze_benchmark.cpp)
+target_link_libraries(polytree_freeze_benchmark PRIVATE polytree::polytree)
+

@@ -12,6 +12,10 @@ file(
     "${POLYTREE_SOURCE_DIR}/tests/*.cc"
     "${POLYTREE_SOURCE_DIR}/tests/*.cpp"
     "${POLYTREE_SOURCE_DIR}/tests/*.cxx"
+    "${POLYTREE_SOURCE_DIR}/benchmarks/*.c"
+    "${POLYTREE_SOURCE_DIR}/benchmarks/*.cc"
+    "${POLYTREE_SOURCE_DIR}/benchmarks/*.cpp"
+    "${POLYTREE_SOURCE_DIR}/benchmarks/*.cxx"
 )
 
 # static_dag.h is retained only as compatibility with the immutable extraction.

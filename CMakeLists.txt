@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     polytree
-    VERSION 0.1.0
-    DESCRIPTION "Compact static polytree with cached evaluation plans"
+    VERSION 0.2.0
+    DESCRIPTION "Mutable authoring and compact static polytree topology"
     LANGUAGES CXX
 )
 
@@ -18,6 +18,11 @@ option(
     POLYTREE_BUILD_TESTS
     "Build the Wozzits static-polytree baseline tests"
     ${_polytree_tests_default}
+)
+option(
+    POLYTREE_BUILD_BENCHMARKS
+    "Build standalone mutable-freeze benchmarks"
+    OFF
 )
 set(
     POLYTREE_ALGO_SOURCE_DIR
@@ -70,6 +75,10 @@ target_link_libraries(
 if(POLYTREE_BUILD_TESTS)
     include(CTest)
     add_subdirectory(tests)
+endif()
+
+if(POLYTREE_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()
 
 install(TARGETS polytree EXPORT polytree-targets)
