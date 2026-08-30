@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Preserve the imported Wozzits baseline byte-for-byte at the recorded hashes.
+include/graph/*.h -text whitespace=-trailing-space
+tests/graph/*.cpp -text whitespace=-trailing-space
+LICENSE -text whitespace=-trailing-space

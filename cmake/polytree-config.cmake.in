@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(algo CONFIG)
+
+include("${CMAKE_CURRENT_LIST_DIR}/polytree-targets.cmake")
+check_required_components(polytree)
