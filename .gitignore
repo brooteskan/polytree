@@ -4,3 +4,6 @@ out/
 CMakeUserPresets.json
 *.user
 *.suo
+
+# Visual Studio local state
+.vs/
