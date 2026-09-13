@@ -24,36 +24,13 @@ option(
     "Build standalone mutable-freeze benchmarks"
     OFF
 )
-set(
-    POLYTREE_ALGO_SOURCE_DIR
-    ""
-    CACHE PATH
-    "Optional path to an algo source checkout"
-)
-
-if(NOT TARGET algo::algo AND POLYTREE_ALGO_SOURCE_DIR)
-    add_subdirectory(
-        "${POLYTREE_ALGO_SOURCE_DIR}"
-        "${CMAKE_CURRENT_BINARY_DIR}/_deps/algo-build"
-        EXCLUDE_FROM_ALL
-    )
+set(_polytree_submodule_helper "${CMAKE_CURRENT_SOURCE_DIR}/external/algo/cmake/GitSubmodule.cmake")
+if(NOT EXISTS "${_polytree_submodule_helper}")
+    message(FATAL_ERROR "Missing algo submodule. Run git submodule update --init --recursive")
 endif()
-
-if(NOT TARGET algo::algo)
-    find_package(algo CONFIG QUIET)
-endif()
-
-if(NOT TARGET algo::algo)
-    include(FetchContent)
-    set(ALGO_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        algo
-        GIT_REPOSITORY https://github.com/brooteskan/algo.git
-        GIT_TAG ea2e45f8c19ebe7deb44c85c91179e12fac57154
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(algo)
-endif()
+include("${_polytree_submodule_helper}")
+set(ALGO_BUILD_TESTS OFF)
+wz_add_git_submodule("${CMAKE_CURRENT_SOURCE_DIR}" external/algo algo::algo)
 
 add_library(polytree INTERFACE)
 add_library(polytree::polytree ALIAS polytree)

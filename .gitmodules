@@ -1,0 +1,6 @@
+[submodule "external/algo"]
+	path = external/algo
+	url = https://github.com/brooteskan/algo.git
+[submodule "external/googletest"]
+	path = external/googletest
+	url = https://github.com/google/googletest.git

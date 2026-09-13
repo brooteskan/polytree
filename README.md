@@ -73,21 +73,21 @@ See [BASELINE.md](BASELINE.md), [TRAVERSAL.md](TRAVERSAL.md),
 
 ## Build and test
 
-With an existing local `algo` checkout:
+Initialize the pinned source dependencies before configuring:
 
 ```sh
-cmake -S . -B build \
-  -DPOLYTREE_BUILD_TESTS=ON \
-  -DPOLYTREE_ALGO_SOURCE_DIR=/path/to/algo
+git submodule update --init --recursive
+cmake -S . -B build -DPOLYTREE_BUILD_TESTS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+`external/algo` and `external/googletest` are exact Git submodule revisions.
+CMake never fetches source dependencies or selects installed packages/local
+checkout overrides. Shared existing targets must originate from initialized
+submodules with the same pinned revisions. A missing or mismatched gitlink
+fails configuration with an initialization instruction.
+
 Configure `POLYTREE_BUILD_BENCHMARKS=ON` to build the standalone
 `polytree_freeze_benchmark`. It reports freeze time and reusable scratch,
 builder, and mapping capacity separately from cached runtime-plan access.
-
-If neither `POLYTREE_ALGO_SOURCE_DIR` nor an installed `algo` package is
-provided, CMake fetches the pinned compatible `algo` revision. Tests similarly
-use an installed GTest package when available and otherwise fetch their pinned
-upstream version.
