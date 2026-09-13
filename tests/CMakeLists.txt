@@ -72,3 +72,7 @@ add_test(
         ${PROJECT_SOURCE_DIR}/tools/check_control_flow_policy.cmake
 )
 set_tests_properties(polytree.no_handwritten_loops PROPERTIES LABELS policy)
+
+add_polytree_baseline_test(polytree_test_ancestor_closure graph/ancestor_closure_tests.cpp polytree.ancestor_closure)
+
+set_tests_properties(polytree.ancestor_closure PROPERTIES LABELS current)

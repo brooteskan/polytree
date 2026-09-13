@@ -453,16 +453,26 @@ namespace wz::core::graph
             std::uint32_t node_total,
             const std::vector<typename PolytreeBuilder<N, E>::PendingEdge>& edges)
         {
-            std::vector<std::vector<NodeHandle>> adjacency(node_total);
+            // Contiguous construction adjacency avoids one allocation per
+            // non-leaf node while retaining exact edge/sibling insertion order.
+            std::vector<std::uint32_t> offsets(node_total + 1, 0);
             std::vector<std::uint32_t> in_degree(node_total, 0);
             std::ranges::for_each(edges, [&](const auto& edge)
             {
-                adjacency[edge.from].push_back(edge.to);
+                ++offsets[edge.from + 1];
                 ++in_degree[edge.to];
+            });
+            std::partial_sum(offsets.begin(), offsets.end(), offsets.begin());
+            auto cursor = offsets;
+            std::vector<NodeHandle> adjacency(edges.size());
+            std::ranges::for_each(edges, [&](const auto& edge)
+            {
+                adjacency[cursor[edge.from]++] = edge.to;
             });
 
             std::vector<NodeHandle> queue;
             std::vector<NodeHandle> order;
+            queue.reserve(node_total);
             order.reserve(node_total);
             auto root_candidates = std::views::iota(NodeHandle{0}, node_total)
                 | std::views::filter(
@@ -477,7 +487,8 @@ namespace wz::core::graph
                 const auto node = queue.back();
                 queue.pop_back();
                 order.push_back(node);
-                std::ranges::for_each(adjacency[node], [&](NodeHandle child)
+                std::ranges::for_each(std::span<const NodeHandle>(adjacency).subspan(
+                    offsets[node], offsets[node + 1] - offsets[node]), [&](NodeHandle child)
                 {
                     if (--in_degree[child] == 0)
                     {
@@ -562,10 +573,11 @@ namespace wz::core::graph
         }
 
         auto plan = detail::make_plan(std::move(topological), builder.parent_of);
-        std::stable_sort(
-            builder.edges.begin(),
-            builder.edges.end(),
-            [](const auto& left, const auto& right) { return left.from < right.from; });
+        const auto by_parent = [](const auto& left, const auto& right) { return left.from < right.from; };
+        if (!std::ranges::is_sorted(builder.edges, by_parent))
+        {
+            std::stable_sort(builder.edges.begin(), builder.edges.end(), by_parent);
+        }
 
         const std::size_t buffer_size =
             sizeof(N) * node_total + alignof(N)
